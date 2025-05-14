@@ -45,14 +45,66 @@ PROPERTY_DATE_PUBLISHED = "DatePublished"
 PROPERTY_NON_FICTION = "Non/Fiction"
 
 def query_database():
-    """Query the Notion database for pages."""
+    """Query the Notion database for all pages."""
     url = f"{NOTION_API_URL}/databases/{DATABASE_ID}/query"
-    response = requests.post(url, headers=notion_headers)
-    if response.status_code != 200:
-        print(f"Error querying database: {response.status_code}")
-        print(response.text)
-        return []
-    return response.json().get("results", [])
+    
+    all_pages = []
+    has_more = True
+    start_cursor = None
+    
+    print("Fetching all pages from Notion database...")
+    
+    while has_more:
+        payload = {}
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+            
+        response = requests.post(url, headers=notion_headers, json=payload)
+        
+        if response.status_code != 200:
+            print(f"Error querying database: {response.status_code}")
+            print(response.text)
+            return []
+        
+        data = response.json()
+        current_pages = data.get("results", [])
+        all_pages.extend(current_pages)
+        
+        print(f"Fetched {len(current_pages)} pages, total so far: {len(all_pages)}")
+        
+        has_more = data.get("has_more", False)
+        start_cursor = data.get("next_cursor")
+        
+        if has_more:
+            print(f"More pages available, continuing with cursor: {start_cursor}")
+    
+    print(f"Total pages fetched: {len(all_pages)}")
+    
+    # Print titles of all pages
+    semicolon_count = 0
+    print("\nList of all page titles in the database:")
+    for i, page in enumerate(all_pages, 1):
+        # Get the title from the Title property
+        properties = page.get("properties", {})
+        title_property = properties.get("Title", {})  # Note: Capital "T" in "Title"
+        
+        if title_property and "title" in title_property:
+            title_arr = title_property["title"]
+            if title_arr and len(title_arr) > 0:
+                title = "".join([text_obj.get("plain_text", "") for text_obj in title_arr])
+                has_semicolon = title.endswith(";")
+                if has_semicolon:
+                    semicolon_count += 1
+                    print(f"{i}. '{title}' [ENDS WITH SEMICOLON]")
+                else:
+                    print(f"{i}. '{title}'")
+            else:
+                print(f"{i}. [Empty title]")
+        else:
+            print(f"{i}. [No Title property found]")
+    
+    print(f"\nFound {semicolon_count} pages with titles ending in semicolons")
+    return all_pages
 
 def get_page_properties(page_id):
     """Get properties of a specific page."""
@@ -425,7 +477,14 @@ def update_notion_page(page_id, book_data):
 
 def process_books():
     """Find books with semicolons and update them with metadata."""
+    print("Starting to process books with semicolons in their titles")
     books = find_books_with_semicolon()
+    
+    if not books:
+        print("No books found with titles ending in semicolons")
+        return []
+    
+    print(f"Found {len(books)} books with semicolon titles to process")
     
     for book in books:
         print(f"Processing book: {book['search_query']}")
@@ -443,6 +502,7 @@ def process_books():
                 book_data = search_open_library(book["search_query"])
         else:
             # Try Google Books first for title search
+            print(f"Searching by title: {book['search_query']}")
             book_data = search_google_books(book["search_query"])
             
             # If Google Books fails, try Open Library
@@ -452,8 +512,8 @@ def process_books():
             
             # If both fail, try adding 'book' to the search query
             if not book_data:
-                print("No results, trying with 'book' keyword added...")
                 modified_query = f"{book['search_query']} book"
+                print(f"No results, trying with 'book' keyword added: {modified_query}")
                 book_data = search_google_books(modified_query)
                 
                 if not book_data:
