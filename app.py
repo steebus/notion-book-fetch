@@ -123,7 +123,7 @@ def find_books_with_semicolon():
     
     for page in pages:
         properties = page.get("properties", {})
-        title_property = properties.get(PROPERTY_TITLE, {})
+        title_property = properties.get("Title", {})  # Note: Capital "T" in "Title"
         
         if title_property and "title" in title_property:
             title_content = title_property["title"]
