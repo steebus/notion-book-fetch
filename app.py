@@ -18,7 +18,7 @@ DATABASE_ID = os.getenv("DATABASE_ID", "9c847e888b7d4cf19630c770c08fce8c")
 CHECK_INTERVAL = int(60)  # Default to 60 seconds
 
 NOTION_API_URL = "https://api.notion.com/v1"
-NOTION_VERSION = "2022-06-28"
+NOTION_VERSION = "2022-02-22"  # Updated to a version that supports page covers and icons
 
 # Headers for Notion API
 notion_headers = {
@@ -43,6 +43,8 @@ PROPERTY_COVER = "Cover"
 PROPERTY_SERIES = "Series"
 PROPERTY_DATE_PUBLISHED = "DatePublished"
 PROPERTY_NON_FICTION = "Non/Fiction"
+PROPERTY_ISBN = "ISBN"
+PROPERTY_SEARCH_TERM = "Search Term"  # Added Search Term property
 
 def query_database():
     """Query the Notion database for all pages."""
@@ -170,6 +172,14 @@ def search_google_books(query):
     
     volume_info = items[0].get("volumeInfo", {})
     
+    # Get ISBN from industry identifiers
+    isbn = None
+    if "industryIdentifiers" in volume_info:
+        for identifier in volume_info["industryIdentifiers"]:
+            if identifier["type"] in ["ISBN_13", "ISBN_10"]:
+                isbn = identifier["identifier"]
+                break
+    
     # Get published date
     published_date = None
     if "publishedDate" in volume_info:
@@ -276,7 +286,8 @@ def search_google_books(query):
         "image_link": image_link,
         "published_date": published_date,
         "fiction_status": fiction_status,
-        "series_name": series_name
+        "series_name": series_name,
+        "isbn": isbn  # Added ISBN to return data
     }
 
 def search_open_library(query):
@@ -295,6 +306,20 @@ def search_open_library(query):
         return None
     
     book = docs[0]
+    
+    # Get ISBN from Open Library data
+    isbn = None
+    if "isbn" in book:
+        isbn_list = book.get("isbn", [])
+        if isbn_list:
+            # Prefer ISBN-13 if available
+            for isbn_candidate in isbn_list:
+                if len(isbn_candidate) == 13:
+                    isbn = isbn_candidate
+                    break
+            # If no ISBN-13, use the first ISBN
+            if not isbn and isbn_list:
+                isbn = isbn_list[0]
     
     # Get published date
     published_date = None
@@ -373,18 +398,19 @@ def search_open_library(query):
     return {
         "title": title,
         "authors": book.get("author_name", []),
-        "description": book.get("description", ""),  # Some Open Library results have descriptions
+        "description": book.get("description", ""),
         "categories": book.get("subject", []),
-        "rating": 0,  # Open Library doesn't provide ratings
+        "rating": 0,
         "page_count": book.get("number_of_pages_median", 0),
         "info_link": f"https://openlibrary.org{book.get('key', '')}" if "key" in book else "",
         "image_link": f"https://covers.openlibrary.org/b/id/{book.get('cover_i', '')}-L.jpg" if "cover_i" in book else "",
         "published_date": published_date,
         "fiction_status": fiction_status,
-        "series_name": series_name
+        "series_name": series_name,
+        "isbn": isbn  # Added ISBN to return data
     }
 
-def update_notion_page(page_id, book_data):
+def update_notion_page(page_id, book_data, original_title):
     """Update a Notion page with book information."""
     url = f"{NOTION_API_URL}/pages/{page_id}"
     
@@ -422,11 +448,21 @@ def update_notion_page(page_id, book_data):
         PROPERTY_GENRES: genres_property,
         PROPERTY_LINK: {
             "url": book_data.get("info_link", "")
+        },
+        PROPERTY_SEARCH_TERM: {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": original_title
+                    }
+                }
+            ]
         }
     }
     
     # Add cover image URL if available
     if book_data.get("image_link"):
+        print("Adding cover image URL to properties...")
         properties[PROPERTY_COVER] = {
             "url": book_data.get("image_link", "")
         }
@@ -463,16 +499,55 @@ def update_notion_page(page_id, book_data):
             "multi_select": [{"name": book_data.get("series_name")}]
         }
     
+    # Add ISBN if available
+    if book_data.get("isbn"):
+        print("Adding ISBN to properties...")
+        properties[PROPERTY_ISBN] = {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": book_data.get("isbn", "")
+                    }
+                }
+            ]
+        }
+    
+    # Prepare the update data
     data = {
         "properties": properties
     }
     
+    # Add cover and icon if image is available
+    if book_data.get("image_link"):
+        print("Setting page cover and icon...")
+        print(f"Using image URL: {book_data.get('image_link')}")
+        data["cover"] = {
+            "type": "external",
+            "external": {
+                "url": book_data.get("image_link")
+            }
+        }
+        data["icon"] = {
+            "type": "external",
+            "external": {
+                "url": book_data.get("image_link")
+            }
+        }
+        print("Page cover and icon set successfully")
+    
+    print("Sending update request to Notion...")
+    print(f"Request URL: {url}")
+    print(f"Request headers: {notion_headers}")
+    print(f"Request data: {json.dumps(data, indent=2)}")
+    
     response = requests.patch(url, headers=notion_headers, json=data)
     if response.status_code != 200:
         print(f"Error updating page: {response.status_code}")
-        print(response.text)
+        print(f"Error response: {response.text}")
+        print(f"Request data that failed: {json.dumps(data, indent=2)}")
         return False
     
+    print("Page updated successfully")
     return True
 
 def process_books():
@@ -523,7 +598,7 @@ def process_books():
         # If we found book data, update the Notion page
         if book_data:
             print(f"Found book info for '{book_data['title']}', updating Notion...")
-            success = update_notion_page(book["id"], book_data)
+            success = update_notion_page(book["id"], book_data, book["title"])
             if success:
                 print("Successfully updated Notion page")
             else:
